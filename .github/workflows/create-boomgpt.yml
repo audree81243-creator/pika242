@@ -19,28 +19,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Load .env
+      - name: Load secrets
+        shell: bash
+        run: |
+          echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> "$GITHUB_ENV"
+          echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> "$GITHUB_ENV"
+
+      - name: Load .env (optional)
         shell: bash
         run: |
           if [ -f .env ]; then
-            python - <<'PY'
-            import os
-            from pathlib import Path
-
-            env_path = Path(".env")
-            if env_path.exists():
-                with env_path.open("r", encoding="utf-8") as fh, open(os.environ["GITHUB_ENV"], "a") as out:
-                    for line in fh:
-                        line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-                        if line.startswith("export "):
-                            line = line[len("export ") :]
-                        if "=" not in line:
-                            continue
-                        key, value = line.split("=", 1)
-                        out.write(f"{key}={value}\n")
-            PY
+            while IFS= read -r line; do
+              line="${line%%$'\r'}"
+              [ -z "$line" ] && continue
+              [ "${line#\#}" != "$line" ] && continue
+              line="${line#export }"
+              case "$line" in
+                *=*) echo "$line" >> "$GITHUB_ENV" ;;
+              esac
+            done < .env
           fi
 
       - name: Install system packages
