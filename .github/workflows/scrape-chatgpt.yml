@@ -6,6 +6,10 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,5 +47,6 @@ jobs:
         shell: bash
         env:
           SB_CHROME_BINARY: /usr/bin/google-chrome
+          JOB_INDEX: ${{ matrix.shard }}
         run: |
           xvfb-run -a python scrape_chatgpt_responses.py
