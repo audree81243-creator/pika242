@@ -22,76 +22,110 @@ def fetch_chatgpt_code_from_boomlify_separate(
     # Provide .cdp alias for helper utilities that expect it.
     boom_sb.cdp = boom_sb
     try:
-        short_sleep_dbg(boom_sb, "boomlify login page")
-        cookie_selectors = [
-            "/html/body/div[1]/div[1]/div[2]/button[2]",
-            'button:contains("Allow all")',
-            'button:contains("Allow all cookies")',
-            'button:contains("Accept all")',
-            'button:contains("Accept")',
-        ]
-        if click_first(boom_sb, cookie_selectors, label="boomlify-allow-cookies"):
-            sleep_dbg(boom_sb, a=8, b=15, label="after_allow_cookies")
-        boom_sb.sleep(3)
-        
-        # Fill login form
-        if not safe_wait_visible(boom_sb, 'input[type="email"]', timeout=20, label="boomlify_email_input"):
-            save_ss(boom_sb, "boomlify_email_input_missing")
-            return None
-        if not safe_click(boom_sb, 'input[type="email"]', label="boomlify_email_click"):
-            return None
-        if not safe_type(boom_sb, 'input[type="email"]', login_email, label="boomlify_email_type"):
-            return None
-        save_ss(boom_sb, "boomlify_email_filled")
-        short_sleep_dbg(boom_sb, "typed login email")
-
-        if not safe_wait_visible(boom_sb, 'input[type="password"]', timeout=20, label="boomlify_password_input"):
-            save_ss(boom_sb, "boomlify_password_input_missing")
-            return None
-        if not safe_click(boom_sb, 'input[type="password"]', label="boomlify_password_click"):
-            return None
-        if not safe_type(boom_sb, 'input[type="password"]', login_password, label="boomlify_password_type"):
-            return None
-        save_ss(boom_sb, "boomlify_password_filled")
-        short_sleep_dbg(boom_sb, "typed login password")
-        
-        boom_sb.sleep(2)
-        boom_sb.solve_captcha()
-        boom_sb.wait_for_element_absent("input[disabled]")
-        boom_sb.sleep(10)
-        boom_sb.scroll_down(30)
-        boom_sb.sleep(8)
-        save_ss(boom_sb, "boomlify_cloudflare_verified")
-        boom_sb.sleep(10)
-
-        # Submit login
-        click_first(
-            boom_sb,
-            [
-                'button:contains("Access Your Secure Inbox")',
-                'button[type="submit"]',
-            ],
-            label="boomlify-login-submit",
-        )
-        print("[OTP] Access your inbox button clicked")
-        sleep_dbg(boom_sb, a=3, b=5, label="after submit login")
-        if click_first(boom_sb, ["/html/body/div[1]/div[1]/div[2]/button[2]"], label="boomlify-allow-cookies-post-login"):
-            sleep_dbg(boom_sb, a=8, b=15, label="after_allow_cookies_post_login")
-
-        # Ensure dashboard
-        with suppress(Exception):
-            if not re.search(r"/dashboard", boom_sb.get_current_url() or "", re.I):
-                boom_sb.open("https://boomlify.com/en/dashboard")
-                sleep_dbg(boom_sb, a=2, b=4, label="ensure dashboard")
-
-        save_ss(boom_sb, "boomlify_dashboard_check")
-
-        # Search the email
+        max_attempts = 3
         search_selectors = [
             'input[placeholder*="Search" i]',
             'input[type="search"]',
             'input[aria-label*="Search" i]',
         ]
+        for attempt in range(1, max_attempts + 1):
+            short_sleep_dbg(boom_sb, "boomlify login page")
+            cookie_selectors = [
+                "/html/body/div[1]/div[1]/div[2]/button[2]",
+                'button:contains("Allow all")',
+                'button:contains("Allow all cookies")',
+                'button:contains("Accept all")',
+                'button:contains("Accept")',
+            ]
+            if click_first(boom_sb, cookie_selectors, label="boomlify-allow-cookies"):
+                sleep_dbg(boom_sb, a=8, b=15, label="after_allow_cookies")
+            boom_sb.sleep(3)
+
+            # Fill login form
+            if not safe_wait_visible(boom_sb, 'input[type="email"]', timeout=20, label="boomlify_email_input"):
+                save_ss(boom_sb, "boomlify_email_input_missing")
+                if attempt < max_attempts:
+                    sleep_dbg(boom_sb, a=8, b=15, label="retry_after_email_missing")
+                    boom_sb.open("https://boomlify.com/en/login")
+                    continue
+                return None
+            if not safe_click(boom_sb, 'input[type="email"]', label="boomlify_email_click"):
+                if attempt < max_attempts:
+                    sleep_dbg(boom_sb, a=8, b=15, label="retry_after_email_click")
+                    boom_sb.open("https://boomlify.com/en/login")
+                    continue
+                return None
+            if not safe_type(boom_sb, 'input[type="email"]', login_email, label="boomlify_email_type"):
+                if attempt < max_attempts:
+                    sleep_dbg(boom_sb, a=8, b=15, label="retry_after_email_type")
+                    boom_sb.open("https://boomlify.com/en/login")
+                    continue
+                return None
+            save_ss(boom_sb, "boomlify_email_filled")
+            short_sleep_dbg(boom_sb, "typed login email")
+
+            if not safe_wait_visible(boom_sb, 'input[type="password"]', timeout=20, label="boomlify_password_input"):
+                save_ss(boom_sb, "boomlify_password_input_missing")
+                if attempt < max_attempts:
+                    sleep_dbg(boom_sb, a=8, b=15, label="retry_after_password_missing")
+                    boom_sb.open("https://boomlify.com/en/login")
+                    continue
+                return None
+            if not safe_click(boom_sb, 'input[type="password"]', label="boomlify_password_click"):
+                if attempt < max_attempts:
+                    sleep_dbg(boom_sb, a=8, b=15, label="retry_after_password_click")
+                    boom_sb.open("https://boomlify.com/en/login")
+                    continue
+                return None
+            if not safe_type(boom_sb, 'input[type="password"]', login_password, label="boomlify_password_type"):
+                if attempt < max_attempts:
+                    sleep_dbg(boom_sb, a=8, b=15, label="retry_after_password_type")
+                    boom_sb.open("https://boomlify.com/en/login")
+                    continue
+                return None
+            save_ss(boom_sb, "boomlify_password_filled")
+            short_sleep_dbg(boom_sb, "typed login password")
+
+            boom_sb.sleep(2)
+            boom_sb.solve_captcha()
+            boom_sb.wait_for_element_absent("input[disabled]")
+            boom_sb.sleep(10)
+            boom_sb.scroll_down(30)
+            boom_sb.sleep(8)
+            save_ss(boom_sb, "boomlify_cloudflare_verified")
+            boom_sb.sleep(10)
+
+            # Submit login
+            click_first(
+                boom_sb,
+                [
+                    'button:contains("Access Your Secure Inbox")',
+                    'button[type="submit"]',
+                ],
+                label="boomlify-login-submit",
+            )
+            print("[OTP] Access your inbox button clicked")
+            sleep_dbg(boom_sb, a=3, b=5, label="after submit login")
+            if click_first(boom_sb, ["/html/body/div[1]/div[1]/div[2]/button[2]"], label="boomlify-allow-cookies-post-login"):
+                sleep_dbg(boom_sb, a=8, b=15, label="after_allow_cookies_post_login")
+
+            # Ensure dashboard
+            with suppress(Exception):
+                if not re.search(r"/dashboard", boom_sb.get_current_url() or "", re.I):
+                    boom_sb.open("https://boomlify.com/en/dashboard")
+                    sleep_dbg(boom_sb, a=2, b=4, label="ensure dashboard")
+
+            save_ss(boom_sb, "boomlify_dashboard_check")
+            if any(visible(boom_sb, sel) for sel in search_selectors):
+                break
+            if attempt < max_attempts:
+                save_ss(boom_sb, f"boomlify_dashboard_not_ready_{attempt}")
+                sleep_dbg(boom_sb, a=8, b=15, label="retry_after_dashboard_not_ready")
+                boom_sb.open("https://boomlify.com/en/login")
+                continue
+            return None
+
+        # Search the email
         ssel = click_first(boom_sb, search_selectors, label="boomlify-search")
         if not ssel:
             print("[BOOMLIFY][ERROR] Search input not found on Boomlify dashboard")

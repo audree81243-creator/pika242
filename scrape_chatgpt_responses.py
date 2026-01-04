@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import time
+from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from contextlib import suppress
 
@@ -12,6 +14,7 @@ from handle_login import handle_login
 from is_pages.is_chat_ui import is_chat_ui_visible
 from is_pages.is_pop_ups import is_popups_visible
 from utils import *
+from db import get_connection
 
 
 def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_login_password=None):
@@ -57,22 +60,11 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             is_popups_visible(sb)
         activate_search_mode(sb)
 
-    prompt_path = "prompts.json"
-    with open(prompt_path, "r", encoding="utf-8") as f:
-        prompt_data = json.load(f)
-    if isinstance(prompt_data, dict):
-        try:
-            prompt_keys = sorted(prompt_data.keys(), key=lambda k: int(k))
-        except Exception:
-            prompt_keys = sorted(prompt_data.keys())
-        prompts = [prompt_data[k] for k in prompt_keys]
-    elif isinstance(prompt_data, list):
-        prompts = prompt_data
-    else:
-        print("[SCRAPE][ERROR] Invalid prompts.json format.")
+    use_db = bool(os.getenv("DATABASE_URL"))
+    if not use_db:
+        print("[SCRAPE][ERROR] DATABASE_URL not set; DB-only mode requires it.")
         return
-
-    prompts = prompts[:20]
+    print("[SCRAPE][DB] Using database for prompts.")
     results = []
     prompt_template = (
         "Act as an expert providing a technical summary for a professional audience. "
@@ -115,6 +107,99 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
         ]
         query = urlencode(filtered, doseq=True)
         return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+    def _normalize_urls(value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except Exception:
+                value = [value]
+        if isinstance(value, dict):
+            value = [value]
+        if not isinstance(value, list):
+            return []
+        cleaned = []
+        for item in value:
+            if isinstance(item, dict) and "url" in item:
+                item = item.get("url")
+            cleaned_item = _clean_link(item)
+            if cleaned_item:
+                cleaned.append(cleaned_item)
+        return cleaned
+
+    def _get_domain(url):
+        try:
+            host = urlsplit(url).hostname or ""
+        except Exception:
+            return ""
+        host = host.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+
+    def _domain_matches(domain, target):
+        if not domain or not target:
+            return False
+        return domain == target or domain.endswith("." + target)
+
+    def _brand_from_domain(domain):
+        if not domain:
+            return ""
+        return domain.split(".")[0]
+
+    def _fetch_prompt_row(conn):
+        query = """
+            SELECT id, prompt_text, website, competitor_websites, status
+            FROM prompts
+            WHERE day = CURRENT_DATE
+              AND (
+                status IN ('pending', 'queued')
+                OR (status = 'processing' AND started_at < (NOW() - INTERVAL '30 minutes'))
+              )
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        """
+        with conn.cursor() as cur:
+            cur.execute("BEGIN")
+            cur.execute(query)
+            row = cur.fetchone()
+            if not row:
+                conn.commit()
+                return None
+            prompt_id, prompt_text, website, competitor_websites, status = row
+            if status == "completed":
+                conn.commit()
+                return None
+            engine_account_value = active_email if active_email else None
+            cur.execute(
+                """
+                UPDATE prompts
+                SET status = 'processing',
+                    started_at = NOW(),
+                    attempts = attempts + 1,
+                    engine_account = COALESCE(%s, engine_account)
+                WHERE id = %s
+                """,
+                (engine_account_value, prompt_id),
+            )
+            conn.commit()
+            return {
+                "id": prompt_id,
+                "prompt_text": prompt_text,
+                "website": website,
+                "competitor_websites": competitor_websites,
+            }
+
+    def _update_prompt_row(conn, prompt_id, payload):
+        columns = ", ".join(f"{key} = %s" for key in payload.keys())
+        values = list(payload.values()) + [prompt_id]
+        query = f"UPDATE prompts SET {columns} WHERE id = %s AND status <> 'completed'"
+        with conn.cursor() as cur:
+            cur.execute(query, values)
+            conn.commit()
 
     def _extract_sources_panel_links(sb):
         script = """
@@ -348,7 +433,32 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             "screenshot": last_screenshot,
         }
 
-    for idx, prompt_raw in enumerate(prompts):
+    max_prompts = 2
+    no_prompt_retries = 10
+    retry_count = 0
+    idx = 0
+    db_conn = None
+    if use_db:
+        db_conn = get_connection()
+
+    def _iter_prompt_items():
+        nonlocal idx, retry_count
+        while idx < max_prompts:
+            row = _fetch_prompt_row(db_conn)
+            if not row:
+                retry_count += 1
+                if retry_count > no_prompt_retries:
+                    return
+                time.sleep(5)
+                continue
+            retry_count = 0
+            print(f"[SCRAPE][DB] Picked prompt id: {row['id']}")
+            yield {"prompt_raw": row["prompt_text"], "row": row}
+            idx += 1
+
+    for item in _iter_prompt_items():
+        prompt_raw = item["prompt_raw"]
+        row = item["row"]
         prompt = str(prompt_raw or "").strip()
         if not prompt:
             results.append({
@@ -364,6 +474,22 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
                 "query_index": idx,
                 "prompt_id": f"query_{idx + 1:04d}",
             })
+            if row:
+                fail_payload = {
+                    "status": "failed",
+                    "error_text": "Error: Empty prompt after cleaning",
+                    "finished_at": datetime.now(timezone.utc),
+                }
+                if active_email:
+                    fail_payload["engine_account"] = active_email
+                print(f"[SCRAPE][DB] Updating prompt id: {row['id']} (failed)")
+                _update_prompt_row(
+                    db_conn,
+                    row["id"],
+                    fail_payload,
+                )
+            if not use_db:
+                idx += 1
             continue
         prompt_text = prompt_template.format(actual_prompt=prompt)
         first_run = _run_prompt(prompt_text, idx, 1)
@@ -379,7 +505,7 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             if href not in combined_links_unique:
                 combined_links_unique.append(href)
         print(
-            f"🔗 Links for prompt {idx + 1}: "
+            f"[LINKS] prompt {idx + 1}: "
             f"run1={len(first_run['hrefs'])} "
             f"run2={len(second_run['hrefs'])} "
             f"combined_raw={len(combined_links_raw)} "
@@ -399,6 +525,49 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             "query_index": idx,
             "prompt_id": f"query_{idx + 1:04d}",
         })
+        if row:
+            website_urls = _normalize_urls(row.get("website"))
+            competitor_urls = _normalize_urls(row.get("competitor_websites"))
+            website_domain = _get_domain(website_urls[0]) if website_urls else ""
+            competitor_domains = {_get_domain(url) for url in competitor_urls if _get_domain(url)}
+            my_citations = []
+            competitor_citations = []
+            for url in combined_links_unique:
+                domain = _get_domain(url)
+                if website_domain and _domain_matches(domain, website_domain):
+                    my_citations.append(url)
+                elif any(_domain_matches(domain, comp) for comp in competitor_domains):
+                    competitor_citations.append(url)
+            brand = _brand_from_domain(website_domain)
+            response_text = first_run["text"] or ""
+            my_brand_mentions_count = 0
+            if brand:
+                my_brand_mentions_count = len(re.findall(rf"\b{re.escape(brand)}\b", response_text, re.I))
+            payload = {
+                "status": "completed",
+                "response_text": first_run["text"],
+                "appeared_links": json.dumps(combined_links_raw),
+                "appeared_links_unique": json.dumps(combined_links_unique),
+                "appeared_links_run1": json.dumps(first_run["hrefs"]),
+                "appeared_links_run2": json.dumps(second_run["hrefs"]),
+                "my_citations": json.dumps(my_citations),
+                "competitor_citations": json.dumps(competitor_citations),
+                "total_citations_count": len(combined_links_unique),
+                "my_domain_citations_count": len(my_citations),
+                "my_brand_mentions_count": my_brand_mentions_count,
+                "finished_at": datetime.now(timezone.utc),
+                "error_text": None,
+            }
+            if active_email:
+                payload["engine_account"] = active_email
+            print(f"[SCRAPE][DB] Updating prompt id: {row['id']} (completed)")
+            _update_prompt_row(db_conn, row["id"], payload)
+        if not use_db:
+            idx += 1
+
+    if db_conn:
+        with suppress(Exception):
+            db_conn.close()
 
     with open("sample_result.json", "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)

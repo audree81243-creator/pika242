@@ -369,6 +369,6 @@ def create_chatgpt_account(email: str) -> bool:
 
 if __name__ == "__main__":
     # email = input("Enter the email to use: ").strip()
-    email="mz7ow63i7tkjz@dev.nondon.store"
+    email="qs6g6kloryum@dev.nondon.store"
     ok = create_chatgpt_account(email)
     print(f"Sign-up result: {ok}")

@@ -228,5 +228,5 @@ if __name__ == "__main__":
     # email = input("Enter the account email to reset: ").strip()
     # password = input("Enter the current password (leave blank to use stored password): ").strip()
     # result = reset_password(email, password or "password-from-get_password")
-    result = reset_password("gx2zd9yeug@dev.nondon.store", "password-from-get_password")
+    result = reset_password("zhvc0ex05l@no.vsmailpro.com", "password-from-get_password")
     print(f"Reset result: {result}")
