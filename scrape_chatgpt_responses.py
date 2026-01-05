@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import shutil
 import psycopg
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -221,6 +222,59 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
                 conn.commit()
 
         return _db_with_retry(f"update prompt {prompt_id}", _run)
+
+    def _format_bytes(value):
+        size = float(value)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if size < 1024.0:
+                return f"{size:.1f}{unit}"
+            size /= 1024.0
+        return f"{size:.1f}PB"
+
+    def _dir_size(path):
+        if not path or not os.path.exists(path):
+            return None
+        total = 0
+        for root, _, files in os.walk(path):
+            for name in files:
+                full_path = os.path.join(root, name)
+                try:
+                    total += os.path.getsize(full_path)
+                except Exception:
+                    continue
+        return total
+
+    def _print_disk_usage(label):
+        try:
+            usage = shutil.disk_usage("/")
+            print(
+                f"[DISK] {label} total={_format_bytes(usage.total)} "
+                f"used={_format_bytes(usage.used)} free={_format_bytes(usage.free)}"
+            )
+        except Exception as exc:
+            print(f"[DISK][WARN] Unable to read disk usage: {exc}")
+        paths = {
+            "screenshots": "screenshots",
+            "latest_logs": "latest_logs",
+            "pip_cache": os.path.expanduser("~/.cache/pip"),
+            "seleniumbase_cache": os.path.expanduser("~/.cache/seleniumbase"),
+        }
+        for name, path in paths.items():
+            size = _dir_size(path)
+            if size is None:
+                continue
+            print(f"[DISK] {name}={_format_bytes(size)} ({path})")
+
+    def _cleanup_caches():
+        targets = [
+            os.path.expanduser("~/.cache/pip"),
+            os.path.expanduser("~/.cache/seleniumbase"),
+            os.path.expanduser("~/.cache/selenium"),
+        ]
+        for path in targets:
+            if os.path.exists(path):
+                shutil.rmtree(path, ignore_errors=True)
+                print(f"[DISK] Removed cache: {path}")
 
     def _extract_sources_panel_links(sb):
         script = """
@@ -454,10 +508,12 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             "screenshot": last_screenshot,
         }
 
-    max_prompts = 100
+    max_prompts = 2
     no_prompt_retries = 10
     retry_count = 0
     idx = 0
+    processed_count = 0
+    cleanup_every = 5
     def _iter_prompt_items():
         nonlocal idx, retry_count
         while idx < max_prompts:
@@ -501,8 +557,8 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
                     fail_payload["engine_account"] = active_email
                 print(f"[SCRAPE][DB] Updating prompt id: {row['id']} (failed)")
                 _update_prompt_row(row["id"], fail_payload)
-            if not use_db:
-                idx += 1
+        if not use_db:
+            idx += 1
             continue
         prompt_text = prompt_template.format(actual_prompt=prompt)
         first_run = _run_prompt(prompt_text, idx, 1)
@@ -578,6 +634,12 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
         if not use_db:
             idx += 1
 
+        processed_count += 1
+        if cleanup_every and processed_count % cleanup_every == 0:
+            _print_disk_usage(f"after {processed_count} prompts (before cleanup)")
+            _cleanup_caches()
+            _print_disk_usage(f"after {processed_count} prompts (after cleanup)")
+
     with open("sample_result.json", "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     if active_email:
@@ -586,5 +648,3 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
 
 if __name__ == "__main__":
     scrape_chatgpt_responses()
-
-
