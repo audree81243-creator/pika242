@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import psycopg
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from contextlib import suppress
@@ -149,57 +150,77 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             return ""
         return domain.split(".")[0]
 
-    def _fetch_prompt_row(conn):
-        query = """
-            SELECT id, prompt_text, website, competitor_websites, status
-            FROM prompts
-            WHERE day = CURRENT_DATE
-              AND (
-                status IN ('pending', 'queued')
-                OR (status = 'processing' AND started_at < (NOW() - INTERVAL '30 minutes'))
-              )
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-        """
-        with conn.cursor() as cur:
-            cur.execute("BEGIN")
-            cur.execute(query)
-            row = cur.fetchone()
-            if not row:
-                conn.commit()
-                return None
-            prompt_id, prompt_text, website, competitor_websites, status = row
-            if status == "completed":
-                conn.commit()
-                return None
-            engine_account_value = active_email if active_email else None
-            cur.execute(
-                """
-                UPDATE prompts
-                SET status = 'processing',
-                    started_at = NOW(),
-                    attempts = attempts + 1,
-                    engine_account = COALESCE(%s, engine_account)
-                WHERE id = %s
-                """,
-                (engine_account_value, prompt_id),
-            )
-            conn.commit()
-            return {
-                "id": prompt_id,
-                "prompt_text": prompt_text,
-                "website": website,
-                "competitor_websites": competitor_websites,
-            }
+    def _db_with_retry(action_label, fn, retries=3, sleep_seconds=5):
+        for attempt in range(1, retries + 1):
+            try:
+                with get_connection() as conn:
+                    return fn(conn)
+            except psycopg.OperationalError as exc:
+                if attempt >= retries:
+                    raise
+                print(
+                    f"[SCRAPE][DB][WARN] {action_label} failed "
+                    f"(attempt {attempt}/{retries}); retrying..."
+                )
+                time.sleep(sleep_seconds)
 
-    def _update_prompt_row(conn, prompt_id, payload):
-        columns = ", ".join(f"{key} = %s" for key in payload.keys())
-        values = list(payload.values()) + [prompt_id]
-        query = f"UPDATE prompts SET {columns} WHERE id = %s AND status <> 'completed'"
-        with conn.cursor() as cur:
-            cur.execute(query, values)
-            conn.commit()
+    def _fetch_prompt_row():
+        def _run(conn):
+            query = """
+                SELECT id, prompt_text, website, competitor_websites, status
+                FROM prompts
+                WHERE day = CURRENT_DATE
+                  AND (
+                    status IN ('pending', 'queued')
+                    OR (status = 'processing' AND started_at < (NOW() - INTERVAL '30 minutes'))
+                  )
+                ORDER BY created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            """
+            with conn.cursor() as cur:
+                cur.execute("BEGIN")
+                cur.execute(query)
+                row = cur.fetchone()
+                if not row:
+                    conn.commit()
+                    return None
+                prompt_id, prompt_text, website, competitor_websites, status = row
+                if status == "completed":
+                    conn.commit()
+                    return None
+                engine_account_value = active_email if active_email else None
+                cur.execute(
+                    """
+                    UPDATE prompts
+                    SET status = 'processing',
+                        started_at = NOW(),
+                        attempts = attempts + 1,
+                        engine_account = COALESCE(%s, engine_account)
+                    WHERE id = %s
+                    """,
+                    (engine_account_value, prompt_id),
+                )
+                conn.commit()
+                return {
+                    "id": prompt_id,
+                    "prompt_text": prompt_text,
+                    "website": website,
+                    "competitor_websites": competitor_websites,
+                }
+
+        return _db_with_retry("fetch prompt", _run)
+
+    def _update_prompt_row(prompt_id, payload):
+        def _run(conn):
+            columns = ", ".join(f"{key} = %s" for key in payload.keys())
+            values = list(payload.values()) + [prompt_id]
+            query = f"UPDATE prompts SET {columns} WHERE id = %s AND status <> 'completed'"
+            with conn.cursor() as cur:
+                cur.execute(query, values)
+                conn.commit()
+
+        return _db_with_retry(f"update prompt {prompt_id}", _run)
 
     def _extract_sources_panel_links(sb):
         script = """
@@ -433,18 +454,14 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             "screenshot": last_screenshot,
         }
 
-    max_prompts = 30
+    max_prompts = 2
     no_prompt_retries = 10
     retry_count = 0
     idx = 0
-    db_conn = None
-    if use_db:
-        db_conn = get_connection()
-
     def _iter_prompt_items():
         nonlocal idx, retry_count
         while idx < max_prompts:
-            row = _fetch_prompt_row(db_conn)
+            row = _fetch_prompt_row()
             if not row:
                 retry_count += 1
                 if retry_count > no_prompt_retries:
@@ -483,11 +500,7 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
                 if active_email:
                     fail_payload["engine_account"] = active_email
                 print(f"[SCRAPE][DB] Updating prompt id: {row['id']} (failed)")
-                _update_prompt_row(
-                    db_conn,
-                    row["id"],
-                    fail_payload,
-                )
+                _update_prompt_row(row["id"], fail_payload)
             if not use_db:
                 idx += 1
             continue
@@ -561,13 +574,9 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             if active_email:
                 payload["engine_account"] = active_email
             print(f"[SCRAPE][DB] Updating prompt id: {row['id']} (completed)")
-            _update_prompt_row(db_conn, row["id"], payload)
+            _update_prompt_row(row["id"], payload)
         if not use_db:
             idx += 1
-
-    if db_conn:
-        with suppress(Exception):
-            db_conn.close()
 
     with open("sample_result.json", "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
@@ -577,4 +586,3 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
 
 if __name__ == "__main__":
     scrape_chatgpt_responses()
-

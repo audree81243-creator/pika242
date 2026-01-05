@@ -7,7 +7,14 @@ def get_connection():
     db_url = (os.getenv("DATABASE_URL") or "").strip()
     if not db_url:
         raise RuntimeError("Missing DATABASE_URL in environment.")
-    return psycopg.connect(db_url)
+    return psycopg.connect(
+        db_url,
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
 
 
 def fetch_one(query, params=None):
