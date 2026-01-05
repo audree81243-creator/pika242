@@ -244,7 +244,54 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
                     continue
         return total
 
+    def _read_meminfo():
+        path = "/proc/meminfo"
+        if not os.path.exists(path):
+            return None
+        data = {}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    parts = line.split(":")
+                    if len(parts) < 2:
+                        continue
+                    key = parts[0].strip()
+                    value_part = parts[1].strip().split()
+                    if not value_part:
+                        continue
+                    try:
+                        data[key] = int(value_part[0]) * 1024
+                    except Exception:
+                        continue
+        except Exception:
+            return None
+        return data
+
     def _print_disk_usage(label):
+        cpu_count = os.cpu_count()
+        if hasattr(os, "getloadavg"):
+            try:
+                load1, load5, load15 = os.getloadavg()
+                print(
+                    f"[CPU] {label} cores={cpu_count} "
+                    f"load={load1:.2f},{load5:.2f},{load15:.2f}"
+                )
+            except Exception as exc:
+                print(f"[CPU][WARN] Unable to read load average: {exc}")
+        elif cpu_count:
+            print(f"[CPU] {label} cores={cpu_count}")
+
+        meminfo = _read_meminfo()
+        if meminfo:
+            total = meminfo.get("MemTotal")
+            available = meminfo.get("MemAvailable")
+            if total and available is not None:
+                used = max(total - available, 0)
+                print(
+                    f"[RAM] {label} total={_format_bytes(total)} "
+                    f"used={_format_bytes(used)} available={_format_bytes(available)}"
+                )
+
         try:
             usage = shutil.disk_usage("/")
             print(
@@ -648,4 +695,3 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
 
 if __name__ == "__main__":
     scrape_chatgpt_responses()
-
