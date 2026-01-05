@@ -454,7 +454,7 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
             "screenshot": last_screenshot,
         }
 
-    max_prompts = 50
+    max_prompts = 100
     no_prompt_retries = 10
     retry_count = 0
     idx = 0
@@ -586,4 +586,5 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
 
 if __name__ == "__main__":
     scrape_chatgpt_responses()
+
 
