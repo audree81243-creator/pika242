@@ -22,6 +22,12 @@ jobs:
       - name: Set up Chrome
         uses: browser-actions/setup-chrome@v1
 
+      - name: Verify Chrome install
+        shell: bash
+        run: |
+          which google-chrome
+          google-chrome --version
+
       - name: Load secrets
         shell: bash
         run: |
@@ -47,6 +53,15 @@ jobs:
         shell: bash
         env:
           SB_CHROME_BINARY: /usr/bin/google-chrome
+          SB_CHROME_ARGS: "--no-sandbox --disable-dev-shm-usage --disable-gpu"
           JOB_INDEX: ${{ matrix.shard }}
         run: |
           xvfb-run -a python scrape_chatgpt_responses.py
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-${{ matrix.shard }}
+          path: screenshots
+          if-no-files-found: warn
