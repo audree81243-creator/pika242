@@ -69,11 +69,7 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
     print("[SCRAPE][DB] Using database for prompts.")
     results = []
     prompt_template = (
-        "Consider I am staying in UAE. Act as an expert providing a technical summary for a professional audience. "
-        "List only the most reputable sources related to the topic. "
-        "Cite only authoritative sources such as official project websites, well-known news outlets, "
-        "and trusted industry platforms. "
-        "Present the maximum amount of citations you can find: {actual_prompt}"
+        "I am from UAE so give me strictly UAE based content and citations: {actual_prompt}"
     )
     attempt_emojis = ["🟢", "🔵", "🟣", "🟡", "🟠"]
     failure_emoji = "🔴"
@@ -695,4 +691,5 @@ def scrape_chatgpt_responses(prompts=None, boomlify_login_email=None, boomlify_l
 
 if __name__ == "__main__":
     scrape_chatgpt_responses()
+
 
